@@ -4,6 +4,9 @@
 
 Форк [better-deepseek](https://github.com/EdgeTypE/better-deepseek), переписанный под Яндекс Алису.
 
+<img width="312" height="637" alt="Снимок экрана 2026-05-20 231452" src="https://github.com/user-attachments/assets/698570cc-aafd-4dae-8d70-7a0fbbb496a2" />
+<img width="295" height="446" alt="image" src="https://github.com/user-attachments/assets/cca91631-15bd-4b58-9e12-c3a1449d817f" />
+
 ## ⚠ Дисклеймер
 
 Это **рабочий пример**, а не отполированный продукт. Что нужно учитывать:
