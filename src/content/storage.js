@@ -1,0 +1,315 @@
+/**
+ * Chrome storage layer — load, save, normalize, and listen for changes.
+ */
+
+import state from "./state.js";
+import { pushConfigToPage, setMaxChatSessions } from "./bridge.js";
+import {
+  STORAGE_KEYS,
+  DEFAULT_SETTINGS,
+  DEFAULT_SYSTEM_PROMPT,
+  SYSTEM_PROMPT_TEMPLATE_VERSION,
+  DOWNLOAD_BEHAVIOR_VERSION,
+} from "../lib/constants.js";
+import { makeId } from "../lib/utils/helpers.js";
+import { setHtmlToMarkdownMaxDepth } from "./dom/message-text.js";
+
+// ── Load ──
+
+export async function loadStateFromStorage() {
+  const values = await chrome.storage.local.get([
+    STORAGE_KEYS.settings,
+    STORAGE_KEYS.skills,
+    STORAGE_KEYS.memories,
+    STORAGE_KEYS.characters,
+    STORAGE_KEYS.projects,
+    STORAGE_KEYS.projectFiles,
+    STORAGE_KEYS.whatsNewPending,
+    STORAGE_KEYS.chatTags,
+    STORAGE_KEYS.remoteAnnouncement,
+    STORAGE_KEYS.dismissedAnnouncements,
+  ]);
+
+  const storedSettings = values[STORAGE_KEYS.settings] || {};
+
+  state.settings = {
+    ...DEFAULT_SETTINGS,
+    ...storedSettings,
+  };
+  state.settings.customSystemPrompts = normalizeCustomSystemPrompts(state.settings.customSystemPrompts);
+
+  setHtmlToMarkdownMaxDepth(state.settings.htmlToMarkdownMaxDepth);
+  setMaxChatSessions(state.settings.maxChatSessions);
+
+  if (Number(storedSettings.systemPromptTemplateVersion || 0) < SYSTEM_PROMPT_TEMPLATE_VERSION) {
+    state.settings.systemPrompt = DEFAULT_SYSTEM_PROMPT;
+    state.settings.systemPromptTemplateVersion = SYSTEM_PROMPT_TEMPLATE_VERSION;
+
+    // Better Alice: also force frequency to "always" when bumping prompt
+    // template. Алиса (особенно Pro) часто забывает между сообщениями, even
+    // с every_x=4. Always-инжекция тратит больше токенов но гарантирует что
+    // model каждый раз видит наш формат.
+    if (state.settings.systemPromptTemplateVersion >= 15) {
+      state.settings.systemPromptInjectionFrequency = "always";
+      state.settings.systemPromptInjectionInterval = 1;
+    }
+
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.settings]: state.settings,
+    });
+  }
+
+  const behaviorVersion = Number(
+    storedSettings && storedSettings.downloadBehaviorVersion
+      ? storedSettings.downloadBehaviorVersion
+      : 0
+  );
+  if (behaviorVersion < DOWNLOAD_BEHAVIOR_VERSION) {
+    state.settings.downloadBehaviorVersion = DOWNLOAD_BEHAVIOR_VERSION;
+    state.settings.autoDownloadFiles = false;
+    state.settings.autoDownloadLongWorkZip = false;
+
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.settings]: state.settings,
+    });
+  }
+
+  state.skills = normalizeSkills(values[STORAGE_KEYS.skills]);
+  state.memories = normalizeMemories(values[STORAGE_KEYS.memories]);
+  state.characters = normalizeCharacters(values[STORAGE_KEYS.characters]);
+  state.projects = normalizeProjects(values[STORAGE_KEYS.projects]);
+  state.projectFiles = normalizeProjectFiles(values[STORAGE_KEYS.projectFiles]);
+  state.whatsNewPending = !!values[STORAGE_KEYS.whatsNewPending];
+  state.chatTags = normalizeChatTags(values[STORAGE_KEYS.chatTags]);
+  state.remoteAnnouncements = Array.isArray(values[STORAGE_KEYS.remoteAnnouncement]) ? values[STORAGE_KEYS.remoteAnnouncement] : [];
+  state.dismissedAnnouncements = Array.isArray(values[STORAGE_KEYS.dismissedAnnouncements]) ? values[STORAGE_KEYS.dismissedAnnouncements] : [];
+}
+
+// ── Normalize ──
+
+export function normalizeSkills(raw) {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .map((item) => ({
+      id: String(item && item.id ? item.id : makeId()),
+      name: String(item && item.name ? item.name : "Skill"),
+      content: String(item && item.content ? item.content : ""),
+      active: item && typeof item.active === "boolean" ? item.active : true,
+    }))
+    .filter((item) => item.content.trim().length > 0);
+}
+
+export function normalizeCustomSystemPrompts(raw) {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .map((item) => ({
+      id: String(item && item.id ? item.id : makeId()),
+      name: String(item && item.name ? item.name : "Saved Prompt"),
+      content: String(item && item.content ? item.content : ""),
+    }))
+    .filter((item) => item.content.trim().length > 0);
+}
+
+export function normalizeCharacters(raw) {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .map((item) => ({
+      id: String(item && item.id ? item.id : makeId()),
+      name: String(item && item.name ? item.name : "Character"),
+      usage: String(item && item.usage ? item.usage : ""),
+      content: String(item && item.content ? item.content : ""),
+      active: item && typeof item.active === "boolean" ? item.active : false,
+    }))
+    .filter((item) => item.content.trim().length > 0);
+}
+
+export function normalizeMemories(raw) {
+  const memories = {};
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const key = sanitizeMemoryKey(item && item.key);
+      const value = String(item && item.value ? item.value : "").trim();
+      if (!key || !value) {
+        continue;
+      }
+      memories[key] = {
+        value,
+        importance: sanitizeMemoryImportance(item && item.importance),
+      };
+    }
+    return memories;
+  }
+
+  if (!raw || typeof raw !== "object") {
+    return memories;
+  }
+
+  for (const [unsafeKey, item] of Object.entries(raw)) {
+    const key = sanitizeMemoryKey(unsafeKey);
+    const value = String(item && item.value ? item.value : "").trim();
+    if (!key || !value) {
+      continue;
+    }
+    memories[key] = {
+      value,
+      importance: sanitizeMemoryImportance(item && item.importance),
+    };
+  }
+
+  return memories;
+}
+
+export function normalizeProjects(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item) => item && typeof item === "object" && item.id && item.name)
+    .map((item) => ({
+      id: String(item.id),
+      name: String(item.name),
+      description: String(item.description || ""),
+      customInstructions: String(item.customInstructions || ""),
+      createdAt: Number(item.createdAt) || Date.now(),
+      updatedAt: Number(item.updatedAt) || Date.now(),
+    }));
+}
+
+export function normalizeProjectFiles(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item) => item && typeof item === "object" && item.id && item.projectId && item.content)
+    .map((item) => ({
+      id: String(item.id),
+      projectId: String(item.projectId),
+      name: String(item.name || "file"),
+      content: String(item.content),
+      size: Number(item.size) || new TextEncoder().encode(String(item.content)).length,
+      createdAt: Number(item.createdAt) || Date.now(),
+    }));
+}
+
+export function sanitizeMemoryKey(input) {
+  return String(input || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]/g, "");
+}
+
+export function sanitizeMemoryImportance(input) {
+  return String(input || "called").toLowerCase() === "always"
+    ? "always"
+    : "called";
+}
+
+export function normalizeChatTags(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return {};
+  }
+  const result = {};
+  for (const [sessionId, tags] of Object.entries(raw)) {
+    if (!sessionId || !Array.isArray(tags)) continue;
+    const cleaned = tags
+      .map((t) => String(t || "").trim())
+      .filter((t) => t.length > 0);
+    if (cleaned.length > 0) {
+      result[sessionId] = cleaned;
+    }
+  }
+  return result;
+}
+
+// ── Storage change listener ──
+
+export function bindStorageChangeListener() {
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== "local") {
+      return;
+    }
+
+    if (changes[STORAGE_KEYS.settings]) {
+      state.settings = {
+        ...DEFAULT_SETTINGS,
+        ...(changes[STORAGE_KEYS.settings].newValue || {}),
+      };
+      state.settings.customSystemPrompts = normalizeCustomSystemPrompts(state.settings.customSystemPrompts);
+      setHtmlToMarkdownMaxDepth(state.settings.htmlToMarkdownMaxDepth);
+      setMaxChatSessions(state.settings.maxChatSessions);
+      if (state.ui) {
+        state.ui.refreshSettings();
+      }
+    }
+
+    if (changes[STORAGE_KEYS.skills]) {
+      state.skills = normalizeSkills(changes[STORAGE_KEYS.skills].newValue);
+      if (state.ui) {
+        state.ui.refreshSkills();
+      }
+    }
+
+    if (changes[STORAGE_KEYS.memories]) {
+      state.memories = normalizeMemories(
+        changes[STORAGE_KEYS.memories].newValue
+      );
+      if (state.ui) {
+        state.ui.refreshMemories();
+      }
+    }
+
+    if (changes[STORAGE_KEYS.characters]) {
+      state.characters = normalizeCharacters(
+        changes[STORAGE_KEYS.characters].newValue
+      );
+      if (state.ui) {
+        state.ui.refreshCharacters();
+      }
+    }
+
+    if (changes[STORAGE_KEYS.projects]) {
+      state.projects = normalizeProjects(changes[STORAGE_KEYS.projects].newValue);
+      if (state.ui) state.ui.refreshProjects();
+    }
+
+    if (changes[STORAGE_KEYS.projectFiles]) {
+      state.projectFiles = normalizeProjectFiles(changes[STORAGE_KEYS.projectFiles].newValue);
+      if (state.ui) state.ui.refreshProjects();
+    }
+
+    if (changes[STORAGE_KEYS.whatsNewPending]) {
+      state.whatsNewPending = !!changes[STORAGE_KEYS.whatsNewPending].newValue;
+      if (state.ui) {
+        state.ui.refreshWhatsNew();
+      }
+    }
+
+    if (changes[STORAGE_KEYS.chatTags]) {
+      state.chatTags = normalizeChatTags(changes[STORAGE_KEYS.chatTags].newValue);
+      
+      // Update sidebar tag chips if search is active
+      import("./ui/SidebarSearch.js").then(m => {
+        if (typeof m.renderTagChips === 'function') {
+          m.renderTagChips();
+        }
+      });
+    }
+    
+    if (changes[STORAGE_KEYS.remoteAnnouncement]) {
+      state.remoteAnnouncements = Array.isArray(changes[STORAGE_KEYS.remoteAnnouncement].newValue) ? changes[STORAGE_KEYS.remoteAnnouncement].newValue : [];
+      window.dispatchEvent(new CustomEvent("bap:remote-announcement-updated", { detail: state.remoteAnnouncements }));
+    }
+
+    if (changes[STORAGE_KEYS.dismissedAnnouncements]) {
+      state.dismissedAnnouncements = changes[STORAGE_KEYS.dismissedAnnouncements].newValue || [];
+    }
+
+    pushConfigToPage();
+  });
+}

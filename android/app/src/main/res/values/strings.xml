@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Better Alice</string>
+    <string name="bap_target_url">https://alice.yandex.ru/</string>
+    <string name="bap_asset_authority">bap-asset.local</string>
+</resources>

@@ -1,0 +1,290 @@
+<script>
+  import { triggerBlobDownload } from "../../lib/utils/download.js";
+  import { handleAutoErrorReport } from "../auto.js";
+
+  /** @type {{content: string}} */
+  let { content } = $props();
+
+  let showScript = $state(false);
+  let status = $state("");
+  let statusColor = $state("var(--bap-text-tertiary)");
+  let isProcessing = $state(false);
+  let iframe = $state();
+
+  const sandboxUrl = chrome.runtime.getURL("sandbox.html");
+
+  // Extract filename from code
+  let fileName = $derived.by(() => {
+    // Look for DOCX.save(doc, "filename.docx") - handle quotes and backticks
+    const match = content.match(/DOCX\.save\(.*,\s*[`"'](.*?)["'`]/);
+    let name = match ? match[1].trim() : "Document";
+    
+    // Ensure .docx extension
+    if (!name.toLowerCase().endsWith(".docx")) {
+      name += ".docx";
+    }
+    return name;
+  });
+
+  async function handleDownload() {
+    if (isProcessing) return;
+    
+    try {
+      isProcessing = true;
+      status = "Preparing sandbox...";
+      statusColor = "var(--bap-text-tertiary)";
+      
+      const requestId = Math.random().toString(36).substring(7);
+      
+      const messageHandler = (event) => {
+        if (event.data.id !== requestId) return;
+        
+        if (event.data.type === "DOCX_RESULT") {
+          status = "Downloading...";
+          statusColor = "var(--bap-text-tertiary)";
+          
+          const base64 = event.data.base64;
+          const blob = base64ToBlob(base64, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+          
+          triggerBlobDownload(blob, fileName);
+          
+          status = "Success!";
+          statusColor = "#10b981";
+          finish();
+        } else if (event.data.type === "DOCX_ERROR") {
+          status = "Error: " + event.data.error;
+          statusColor = "#ef4444";
+          handleAutoErrorReport("Word", event.data.error, content);
+          finish();
+        }
+      };
+
+      const finish = () => {
+        window.removeEventListener("message", messageHandler);
+        isProcessing = false;
+        setTimeout(() => { if (!isProcessing) status = ""; }, 3000);
+      };
+
+      window.addEventListener("message", messageHandler);
+      
+      // Send to sandbox
+      iframe.contentWindow.postMessage({
+        type: "GEN_DOCX",
+        code: content,
+        id: requestId
+      }, "*");
+
+      status = "Generating Word Doc...";
+
+    } catch (err) {
+      console.error("Docx Sandbox Bridge Error:", err);
+      status = "Bridge Error";
+      statusColor = "#ef4444";
+      isProcessing = false;
+    }
+  }
+
+  function base64ToBlob(base64, mimeType) {
+    const byteCharacters = atob(base64);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    return new Blob([byteArray], { type: mimeType });
+  }
+
+  function toggleScript() {
+    showScript = !showScript;
+  }
+</script>
+
+<article class="bap-docx-card">
+  <div class="bap-docx-download-wrapper">
+    <div class="bap-docx-info">
+      <div class="bap-docx-icon">
+        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+          <path d="M10 13h4"></path>
+          <path d="M10 17h4"></path>
+          <path d="M10 9h4"></path>
+          <text x="7" y="18" font-size="6" font-weight="bold" fill="currentColor" stroke="none" style="font-family: sans-serif;">DOCX</text>
+        </svg>
+      </div>
+      
+      <div class="bap-docx-details">
+        <h4>Word документ</h4>
+        <p>{fileName}</p>
+      </div>
+    </div>
+
+    <div class="bap-docx-actions">
+      {#if status}
+        <span class="bap-status-bubble" style="color: {statusColor}">{status}</span>
+      {/if}
+      <button type="button" class="bap-btn" onclick={handleDownload} disabled={isProcessing}>
+        {isProcessing ? 'Working...' : 'Download'}
+      </button>
+    </div>
+  </div>
+
+  <div class="bap-docx-script-toggle">
+    <button type="button" class="bap-docx-script-btn" onclick={toggleScript}>
+      {showScript ? 'Hide generated script' : 'Show generated script'}
+    </button>
+
+    {#if showScript}
+      <pre class="bap-docx-script-content">{content.trim()}</pre>
+    {/if}
+  </div>
+
+  <iframe 
+    bind:this={iframe} 
+    src={sandboxUrl} 
+    style="display: none;" 
+    title="BDS Docx Sandbox"
+  ></iframe>
+</article>
+
+<style>
+  .bap-docx-card {
+    --docx-icon-bg: #eff6ff;
+    --docx-icon-color: #2563eb;
+    margin: 10px 0;
+    border: 1px solid var(--bap-border);
+    border-radius: var(--bap-radius);
+    background: var(--bap-bg-panel);
+    overflow: hidden;
+  }
+
+  :global(.dark) .bap-docx-card {
+    --docx-icon-bg: #1e3a8a;
+    --docx-icon-color: #60a5fa;
+  }
+
+  .bap-docx-download-wrapper {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+  }
+
+  .bap-docx-info {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    min-width: 0;
+  }
+
+  .bap-docx-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 48px;
+    background-color: var(--docx-icon-bg);
+    border: 1px solid var(--bap-border);
+    border-radius: 8px;
+    color: var(--docx-icon-color);
+    flex-shrink: 0;
+  }
+
+  .bap-docx-details {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .bap-docx-details h4 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--bap-text-primary);
+  }
+
+  .bap-docx-details p {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 500;
+    text-transform: uppercase;
+    color: var(--bap-text-tertiary);
+    letter-spacing: 0.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .bap-docx-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .bap-status-bubble {
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .bap-docx-script-toggle {
+    padding: 0 16px 12px;
+    border-top: 1px solid var(--ds-border-1, #f0f0f0);
+    padding-top: 10px;
+  }
+
+  :global(.dark) .bap-docx-script-toggle {
+    border-top-color: var(--bap-border);
+  }
+
+  .bap-docx-script-btn {
+    background: transparent;
+    border: none;
+    color: var(--bap-text-tertiary);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    text-decoration: underline;
+    transition: color 0.2s;
+  }
+
+  .bap-docx-script-btn:hover {
+    color: var(--bap-text-secondary);
+  }
+
+  .bap-docx-script-content {
+    margin-top: 10px;
+    max-height: 200px;
+    overflow-y: auto;
+    background: var(--bap-bg-elevated);
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 11px;
+    border: 1px solid var(--bap-border);
+    font-family: monospace;
+    white-space: pre-wrap;
+    color: var(--bap-text-primary);
+  }
+
+  .bap-btn {
+    border: 1px solid var(--bap-border);
+    border-radius: 8px;
+    background: var(--bap-bg-elevated);
+    color: var(--bap-text-primary);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 8px 16px;
+    transition: all 0.2s;
+  }
+
+  .bap-btn:hover:not(:disabled) {
+    background: var(--bap-bg-hover);
+    border-color: var(--bap-border-hover);
+  }
+
+  .bap-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+</style>

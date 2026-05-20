@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "Better Alice",
+  "version": "0.1.0",
+  "description": "Слой расширений для Яндекс Алисы и Алисы Про: память, навыки, загрузка файлов/репозиториев/веб-страниц, экспорт сессий, темы.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://alice.yandex.ru/*",
+    "https://alicepro.yandex.ru/*",
+    "https://codeload.github.com/*",
+    "https://cdn.jsdelivr.net/*",
+    "https://pyscript.net/*",
+    "<all_urls>"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://alice.yandex.ru/*",
+        "https://alicepro.yandex.ru/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["injected.js", "sandbox.html", "sandbox.js", "static/loading/*.svg"],
+      "matches": [
+        "https://alice.yandex.ru/*",
+        "https://alicepro.yandex.ru/*"
+      ]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "sandbox": {
+    "pages": ["sandbox.html"]
+  },
+  "action": {
+    "default_title": "Better Alice"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'",
+    "sandbox": "sandbox allow-scripts allow-forms allow-popups; script-src 'self' 'unsafe-eval' 'unsafe-inline' blob: https://cdn.jsdelivr.net https://pyscript.net; object-src 'self'; connect-src 'self' https://cdn.jsdelivr.net data: blob:; worker-src 'self' blob:"
+  }
+}
